@@ -1,0 +1,170 @@
+name: React Native CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint-and-test:
+    name: 静的解析とテスト
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Node.jsセットアップ
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: 依存関係インストール
+        run: npm ci --ignore-scripts
+
+      - name: ESLintによる静的解析
+        run: npm run lint
+
+      - name: TypeScriptコンパイル確認
+        run: npm run tsc
+
+      - name: Jestによるテスト実行
+        run: npm test
+
+  build-android:
+    name: Androidビルド
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Node.jsセットアップ
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Java Development Kitセットアップ
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '11'
+
+      - name: 依存関係インストール
+        run: npm ci --ignore-scripts
+
+      - name: Gradleキャッシュ設定
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Androidビルド (開発版)
+        if: github.ref == 'refs/heads/develop'
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Androidビルド (リリース版)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cd android
+          ./gradlew assembleRelease --no-daemon
+
+      - name: APKファイルをアップロード
+        uses: actions/upload-artifact@v3
+        with:
+          name: app-apk
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/outputs/apk/release/*.apk
+
+  build-ios:
+    name: iOSビルド
+    needs: lint-and-test
+    runs-on: macos-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Node.jsセットアップ
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: 依存関係インストール
+        run: npm ci --ignore-scripts
+
+      - name: Cocoapodsインストール
+        run: |
+          cd ios
+          pod install
+
+      - name: iOSビルド (開発版)
+        if: github.ref == 'refs/heads/develop'
+        run: |
+          cd ios
+          xcodebuild -workspace Meetify.xcworkspace -scheme Meetify -configuration Debug -sdk iphonesimulator -derivedDataPath build
+
+      - name: iOSビルド (リリース版)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cd ios
+          xcodebuild -workspace Meetify.xcworkspace -scheme Meetify -configuration Release -sdk iphonesimulator -derivedDataPath build
+
+  deploy-to-firebase:
+    name: Firebaseにデプロイ
+    needs: [build-android, build-ios]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Node.jsセットアップ
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Firebase CLIインストール
+        run: npm install -g firebase-tools
+
+      - name: APKダウンロード
+        uses: actions/download-artifact@v3
+        with:
+          name: app-apk
+          path: artifacts
+
+      - name: Firebase App Distributionにデプロイ (develop)
+        if: github.ref == 'refs/heads/develop'
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID_ANDROID_DEV }}
+        run: |
+          firebase appdistribution:distribute artifacts/app-debug.apk \
+            --app "$FIREBASE_APP_ID" \
+            --groups "testers" \
+            --token "$FIREBASE_TOKEN" \
+            --release-notes "開発ビルド - ${{ github.sha }}"
+
+      - name: Firebase App Distributionにデプロイ (main)
+        if: github.ref == 'refs/heads/main'
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID_ANDROID_PROD }}
+        run: |
+          firebase appdistribution:distribute artifacts/app-release.apk \
+            --app "$FIREBASE_APP_ID" \
+            --groups "beta-testers" \
+            --token "$FIREBASE_TOKEN" \
+            --release-notes "リリースビルド - ${{ github.sha }}"
+
+   

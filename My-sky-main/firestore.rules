@@ -1,0 +1,644 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ヘルパー関数
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin(circleId) {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/circles/$(circleId)) && 
+             request.auth.uid in get(/databases/$(database)/documents/circles/$(circleId)).data.admins;
+    }
+    
+    function isMember(circleId) {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/circles/$(circleId)) && 
+             request.auth.uid in get(/databases/$(database)/documents/circles/$(circleId)).data.members;
+    }
+    
+    function isParticipant(roomId) {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/chatRooms/$(roomId)) && 
+             request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(roomId)).data.participantIds;
+    }
+    
+    function isCircleMember(circleId, userId) {
+      return exists(/databases/$(database)/documents/circles/$(circleId)) && 
+             userId in get(/databases/$(database)/documents/circles/$(circleId)).data.members;
+    }
+    
+    function isCircleAdmin(circleId, userId) {
+      return exists(/databases/$(database)/documents/circles/$(circleId)) && 
+             userId in get(/databases/$(database)/documents/circles/$(circleId)).data.admins;
+    }
+    
+    // サークル参加者かどうかをチェックする関数
+    function isCircleParticipant(circleId) {
+      return isAuthenticated() && exists(/databases/$(database)/documents/circles/$(circleId)) && (
+        request.auth.uid in get(/databases/$(database)/documents/circles/$(circleId)).data.members ||
+        request.auth.uid in get(/databases/$(database)/documents/circles/$(circleId)).data.admins ||
+        get(/databases/$(database)/documents/circles/$(circleId)).data.createdBy == request.auth.uid
+      );
+    }
+    
+    // イベント参加者かどうかをチェックする関数
+    function isEventParticipant(eventId) {
+      return exists(/databases/$(database)/documents/events/$(eventId)) &&
+             request.auth != null &&
+             (
+               get(/databases/$(database)/documents/events/$(eventId)).data.createdBy == request.auth.uid ||
+               (get(/databases/$(database)/documents/events/$(eventId)).data.admins != null && 
+                request.auth.uid in get(/databases/$(database)/documents/events/$(eventId)).data.admins) ||
+               (get(/databases/$(database)/documents/events/$(eventId)).data.attendees != null && 
+                request.auth.uid in get(/databases/$(database)/documents/events/$(eventId)).data.attendees)
+             );
+    }
+    
+    // ユーザー認証関連のルール
+    match /users/{userId} {
+      // プロフィール情報は誰でも読み取り可能（公開プロフィール）
+      allow read;
+      
+      // 自分のプロフィールの作成は本人のみ可能
+      allow create: if isOwner(userId);
+      
+      // プロフィールの更新権限
+      allow update: if 
+        // 自分のプロフィールは自分で更新可能
+        isOwner(userId) || 
+        // フォロー/フォロワー配列の更新は認証済みユーザーなら可能
+        (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['followers', 'circles', 'pendingFollowers', 'following']));
+      
+      // ユーザーの削除は本人のみ可能
+      allow delete: if isOwner(userId);
+      
+      // フォロワー、フォロー中のユーザー関連のルール
+      match /followers/{followerId} {
+        allow read;
+        // フォロワーの追加・削除は認証済みユーザーなら可能
+        allow write: if isAuthenticated();
+      }
+      
+      match /following/{followingId} {
+        allow read;
+        // フォロー中ユーザーの追加・削除は認証済みユーザーなら可能
+        allow write: if isAuthenticated();
+      }
+      
+      // ユーザーの投稿コレクション
+      match /posts/{postId} {
+        allow read;
+        allow create: if isOwner(userId);
+        allow update, delete: if isOwner(userId);
+      }
+    }
+    
+    // 投稿関連のルール
+    match /posts/{postId} {
+      // 投稿の閲覧権限チェック
+      function canViewPost() {
+        let isPublic = !('isPrivate' in resource.data) || resource.data.isPrivate == false;
+        let isOwner = isAuthenticated() && resource.data.userId == request.auth.uid;
+        let isFollower = isAuthenticated() && resource.data.userId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.following;
+        
+        return isPublic || isOwner || isFollower;
+      }
+      
+      // 投稿の読み取り - プライバシーを考慮
+      allow read: if canViewPost();
+      
+      // 投稿の作成は認証済みユーザーのみ可能
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      
+      // 投稿の更新ルール
+      // 1. 自分の投稿なら更新・削除可能
+      // 2. いいね（likes配列）やコメント数の更新は認証済みユーザーなら誰でも可能
+      allow update: if isAuthenticated() && (
+        // 自分の投稿の場合は全て更新可能
+        resource.data.userId == request.auth.uid ||
+        // 以下のいずれかのフィールドのみの更新であれば誰でも可能
+        (
+          // 更新対象のフィールドが次のいずれかのみの場合
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes']) ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['comments']) ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['commentsCount']) ||
+          // likes と comments/commentsCount 両方を更新する場合も許可
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'comments']) ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'commentsCount'])
+        )
+      );
+      
+      // 削除は投稿者のみ可能
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      
+      // 投稿内のコメント（サブコレクション）
+      match /comments/{commentId} {
+        allow read: if canViewPost();
+        // コメントの作成は認証済みユーザーなら誰でも可能
+        allow create: if isAuthenticated();
+        // 自分のコメントのみ更新・削除可能
+        allow update: if isAuthenticated() && (
+          resource.data.userId == request.auth.uid ||
+          // いいね（likes配列）の更新は認証済みユーザーなら誰でも可能
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes']) &&
+            (
+              // いいねを追加する場合
+              (request.resource.data.likes.size() > resource.data.likes.size() &&
+              request.resource.data.likes.removeAll(resource.data.likes).hasOnly([request.auth.uid])) ||
+              // いいねを削除する場合
+              (resource.data.likes.size() > request.resource.data.likes.size() &&
+              resource.data.likes.removeAll(request.resource.data.likes).hasOnly([request.auth.uid]))
+            )
+          )
+        );
+        allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+        
+        // 返信コメント
+        match /replies/{replyId} {
+          allow read: if canViewPost();
+          // 返信の作成は認証済みユーザーなら誰でも可能
+          allow create: if isAuthenticated();
+          // 自分の返信のみ更新・削除可能
+          allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+        }
+      }
+      
+      // いいね
+      match /likes/{userId} {
+        allow read: if canViewPost();
+        // 自分のいいねのみ追加・削除可能（いいねは他ユーザーも付けられる）
+        allow write: if isAuthenticated() && request.auth.uid == userId;
+      }
+    }
+    
+    // トップレベルのコメントコレクション
+    match /comments/{commentId} {
+      allow read;
+      // コメントの作成は認証済みユーザーなら誰でも可能に変更
+      allow create: if isAuthenticated();
+      // 自分のコメントのみ更新・削除可能
+      allow update: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        // いいね（likes配列）の更新は認証済みユーザーなら誰でも可能
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes']) &&
+          (
+            // いいねを追加する場合
+            (request.resource.data.likes.size() > resource.data.likes.size() &&
+            request.resource.data.likes.removeAll(resource.data.likes).hasOnly([request.auth.uid])) ||
+            // いいねを削除する場合
+            (resource.data.likes.size() > request.resource.data.likes.size() &&
+            resource.data.likes.removeAll(request.resource.data.likes).hasOnly([request.auth.uid]))
+          )
+        )
+      );
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      
+      // 返信コメント
+      match /replies/{replyId} {
+        allow read: if isAuthenticated();
+        // 返信の作成は認証済みユーザーなら誰でも可能
+        allow create: if isAuthenticated();
+        // 自分の返信のみ更新・削除可能
+        allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      }
+    }
+    
+    // サークル関連のルール
+    match /circles/{circleId} {
+      // サークル情報は誰でも読み取り可能
+      allow read;
+      
+      // サークルの作成は認証済みユーザーのみ可能
+      allow create: if isAuthenticated() && 
+                     request.resource.data.createdBy == request.auth.uid && 
+                     request.resource.data.admins.hasAny([request.auth.uid]) && 
+                     request.resource.data.members.hasAny([request.auth.uid]);
+      
+      // サークルの更新は以下のいずれかの条件で可能:
+      // 1. 管理者/作成者による更新
+      // 2. 一般ユーザーによるpendingMembersへの追加（参加リクエスト）
+      // 3. 一般ユーザーによるmembersへの自分自身の追加（公開サークルへの直接参加）
+      // 4. サークルメンバーによる自分自身の削除（退会処理）
+      allow update: if isAuthenticated() && (
+        // 管理者/オーナーによる更新
+        isAdmin(circleId) || 
+        // 一般ユーザーは参加リクエストのみ可能（pendingMembersフィールドのみ更新可能）
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pendingMembers']) ||
+        // 公開サークルに参加する場合（非公開でなく、membersフィールドのみ更新し、自分自身を追加する場合）
+        (
+          !resource.data.isPrivate && 
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members']) &&
+          // membersに新規追加されるユーザーID配列が自分自身のIDだけであることを確認
+          request.resource.data.members.removeAll(resource.data.members).hasOnly([request.auth.uid])
+        ) ||
+        // サークルから退会する場合（membersフィールドのみ更新し、自分自身を削除する場合）
+        (
+          // membersフィールドのみの更新、または管理者の場合はadminsフィールドも更新可能
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members']) ||
+            (
+              request.auth.uid in resource.data.admins &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'admins'])
+            )
+          ) &&
+          // 現在メンバーであることを確認
+          request.auth.uid in resource.data.members &&
+          // 更新後のmembersから自分自身が削除されているか確認
+          !request.resource.data.members.hasAll([request.auth.uid]) &&
+          // 他のメンバーは変更されていないことを確認
+          // 現在のメンバーから自分を除いたものが、更新後のメンバーに全て含まれている
+          resource.data.members.removeAll([request.auth.uid]).hasAll(request.resource.data.members) &&
+          // 更新後のメンバーに新たに追加されたメンバーがないことを確認
+          request.resource.data.members.hasAll(resource.data.members.removeAll([request.auth.uid])) &&
+          // 管理者の場合は、adminsフィールドからも自分自身が削除されていることを確認
+          (
+            !(request.auth.uid in resource.data.admins) || // 元々管理者でない場合はチェック不要
+            (
+              // 管理者の場合は、adminsフィールドからも自分自身が削除されていることを確認
+              !request.resource.data.admins.hasAll([request.auth.uid]) &&
+              // 他の管理者は変更されていないことを確認
+              resource.data.admins.removeAll([request.auth.uid]).hasAll(request.resource.data.admins) &&
+              // 更新後の管理者に新たに追加された管理者がないことを確認
+              request.resource.data.admins.hasAll(resource.data.admins.removeAll([request.auth.uid]))
+            )
+          )
+        )
+      );
+      
+      // サークルの削除は以下の条件で可能:
+      // 1. サークル作成者
+      // 2. 最後の管理者（adminsが1人だけで自分自身）
+      allow delete: if isAuthenticated() && (
+        resource.data.createdBy == request.auth.uid || 
+        (
+          resource.data.admins.size() == 1 && 
+          resource.data.admins[0] == request.auth.uid
+        )
+      );
+      
+      // メンバー
+      match /members/{memberId} {
+        allow read;
+        allow write: if isAdmin(circleId) || request.auth.uid == memberId;
+      }
+      
+      // イベント（サブコレクション）
+      match /events/{eventId} {
+        allow read;
+        allow create: if isAuthenticated() && isMember(circleId);
+        allow update, delete: if isAdmin(circleId) || (isAuthenticated() && resource.data.createdBy == request.auth.uid);
+        
+        // イベント参加者
+        match /participants/{userId} {
+          allow read;
+          allow create, delete: if isAuthenticated() && (
+            isAdmin(circleId) || request.auth.uid == userId
+          );
+        }
+      }
+      
+      // 投稿（サブコレクション）
+      match /posts/{postId} {
+        allow read;
+        allow create: if isMember(circleId) && request.resource.data.userId == request.auth.uid;
+        allow update, delete: if isAdmin(circleId) || resource.data.userId == request.auth.uid;
+        
+        // コメント
+        match /comments/{commentId} {
+          allow read;
+          allow create: if isMember(circleId) && request.resource.data.userId == request.auth.uid;
+          allow update, delete: if isAdmin(circleId) || resource.data.userId == request.auth.uid;
+        }
+      }
+    }
+    
+    // イベント関連のルール（トップレベルコレクション用）
+    match /events/{eventId} {
+      // イベントの読み取りは認証済みユーザーに許可
+      allow read: if isAuthenticated();
+      
+      // イベントの作成は認証済みユーザーのみ可能
+      allow create: if isAuthenticated() && 
+        request.resource.data.createdBy == request.auth.uid && 
+        // 新しく追加した検証: カテゴリと都道府県フィールドの検証
+        (
+          !('categories' in request.resource.data) || 
+          request.resource.data.categories is list
+        ) && (
+          !('prefecture' in request.resource.data) ||
+          request.resource.data.prefecture is string
+        );
+      
+      // イベントの更新は以下のいずれかの条件で可能:
+      // 1. イベント作成者による一般的な更新
+      // 2. 権限譲渡処理（createdByとadminsの更新）
+      // 3. 一般ユーザーによる自分自身の参加/キャンセル（attendees,pendingAttendeesの更新）
+      allow update: if isAuthenticated() && (
+        // 1. イベント作成者による一般的な更新
+        (resource.data.createdBy == request.auth.uid && request.resource.data.createdBy == request.auth.uid) ||
+        
+        // 2. 権限譲渡処理（作成者は元の作成者である必要がある）
+        (
+          resource.data.createdBy == request.auth.uid && 
+          request.resource.data.diff(resource.data).affectedKeys().hasAny(['createdBy', 'admins', 'updatedAt']) &&
+          // 権限譲渡時にcreatedByが変更される場合の追加チェック
+          (
+            // createdByが変更されない場合はOK
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny(['createdBy']) ||
+            // createdByが変更される場合、元の作成者であることを確認して、以下を検証
+            (
+              // 必ずadminsも一緒に更新されること
+              request.resource.data.diff(resource.data).affectedKeys().hasAny(['admins']) &&
+              // 新しい作成者がadminsに含まれていること
+              request.resource.data.admins.hasAll([request.resource.data.createdBy])
+            )
+          )
+        ) ||
+        
+        // 3A. 一般ユーザーが自分自身をattendeesに追加（参加）
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendees', 'updatedAt']) &&
+          request.resource.data.attendees.hasAll(resource.data.attendees) && 
+          request.resource.data.attendees.removeAll(resource.data.attendees).hasOnly([request.auth.uid])
+        ) ||
+        
+        // 3B. 一般ユーザーが自分自身をattendeesから削除（キャンセル）
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendees', 'updatedAt']) &&
+          resource.data.attendees.hasAll(request.resource.data.attendees) &&
+          resource.data.attendees.removeAll(request.resource.data.attendees).hasOnly([request.auth.uid])
+        ) ||
+        
+        // 3C. 管理者が自分自身をattendeesとadminsから同時に削除（管理者のキャンセル）
+        (
+          request.auth.uid in resource.data.admins &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendees', 'admins', 'updatedAt']) &&
+          resource.data.attendees.hasAll(request.resource.data.attendees) &&
+          resource.data.attendees.removeAll(request.resource.data.attendees).hasOnly([request.auth.uid]) &&
+          resource.data.admins.hasAll(request.resource.data.admins) &&
+          resource.data.admins.removeAll(request.resource.data.admins).hasOnly([request.auth.uid])
+        ) ||
+        
+        // 3D. 一般ユーザーがpendingAttendeesに自分を追加または削除
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pendingAttendees', 'updatedAt']) &&
+          (
+            // 追加
+            request.resource.data.pendingAttendees.hasAll(resource.data.pendingAttendees) &&
+            request.resource.data.pendingAttendees.removeAll(resource.data.pendingAttendees).hasOnly([request.auth.uid]) ||
+            // 削除
+            resource.data.pendingAttendees.hasAll(request.resource.data.pendingAttendees) &&
+            resource.data.pendingAttendees.removeAll(request.resource.data.pendingAttendees).hasOnly([request.auth.uid])
+          )
+        )
+      ) && (
+        // カテゴリと都道府県の型チェック
+        !('categories' in request.resource.data) || 
+        request.resource.data.categories is list
+      ) && (
+        !('prefecture' in request.resource.data) ||
+        request.resource.data.prefecture is string
+      );
+      
+      // イベントの削除は以下の条件で可能:
+      // 1. イベント作成者
+      // 2. サークル管理者
+      allow delete: if isAuthenticated() && (
+        resource.data.createdBy == request.auth.uid || 
+        (
+          'admins' in resource.data && 
+          request.auth.uid in resource.data.admins
+        )
+      );
+      
+      // イベント参加者コレクション
+      match /participants/{userId} {
+        allow read: if isAuthenticated();
+        allow write: if isAuthenticated() && (isOwner(userId) || 
+                       isCircleAdmin(get(/databases/$(database)/documents/events/$(eventId)).data.circleId, request.auth.uid));
+      }
+      
+      // イベント参加リクエスト用のサブコレクション
+      match /pendingAttendees/{userId} {
+        allow read: if isAuthenticated();
+        // 参加リクエストの作成は認証済みユーザーなら誰でも可能
+        // 自分が以前イベント作成者だったとしても新しくリクエストを送れるように
+        allow create: if isAuthenticated() && request.auth.uid == userId;
+        // 削除は本人またはイベント作成者/サークル管理者が可能
+        allow delete: if isAuthenticated() && (
+          request.auth.uid == userId ||
+          get(/databases/$(database)/documents/events/$(eventId)).data.createdBy == request.auth.uid ||
+          isCircleAdmin(get(/databases/$(database)/documents/events/$(eventId)).data.circleId, request.auth.uid)
+        );
+      }
+    }
+    
+    // メッセージ関連のルール
+    match /chatRooms/{roomId} {
+      // チャットルーム作成権限チェック関数
+      function canCreateChatRoom(otherUserId) {
+        let currentUserProfile = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+        let otherUserProfile = get(/databases/$(database)/documents/users/$(otherUserId)).data;
+        
+        // ユーザーのプライバシー設定を取得（未設定の場合はpublicとみなす）
+        let targetPrivacy = otherUserProfile.accountPrivacy || 'public';
+        
+        // プライバシー設定に基づいてチャットルーム作成可能か判定
+        return 
+          // 公開アカウントの場合は誰でもメッセージ可能
+          targetPrivacy == 'public' ||
+          // 鍵アカウントの場合は相互フォロー関係が必要
+          (targetPrivacy == 'private' && 
+           request.auth.uid in otherUserProfile.followers && 
+           otherUserId in currentUserProfile.followers);
+      }
+      
+      // チャットルームのリスト取得は認証済みユーザーのみ可能
+      allow list: if isAuthenticated();
+      
+      // チャットルームの取得は認証済みユーザーなら可能
+      allow get: if isAuthenticated();
+      
+      // チャットルームの作成は認証済みユーザーのみ可能
+      allow create: if isAuthenticated();
+      
+      // チャットルームの更新・削除は参加者のみ可能
+      allow update: if isAuthenticated() && (
+        // 参加者であれば更新可能
+        (!('participantIds' in resource.data) || request.auth.uid in resource.data.participantIds) && (
+          // 基本的な更新
+          true
+          ||
+          // hiddenフィールドの更新: 自分のIDに対応する値のみを更新
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hidden', 'updatedAt']) &&
+            (
+              !('hidden' in resource.data) || // hiddenが存在しない場合は新規作成
+              request.resource.data.hidden.diff(resource.data.hidden || {}).affectedKeys().hasOnly([request.auth.uid])
+            )
+          )
+        )
+      );
+      
+      allow delete: if isAuthenticated() && (
+        !('participantIds' in resource.data) || request.auth.uid in resource.data.participantIds
+      );
+      
+      // メッセージ
+      match /messages/{messageId} {
+        // メッセージの読み取りは認証済みユーザーなら可能
+        allow read: if isAuthenticated();
+        
+        // メッセージの作成は認証済みユーザーなら可能（自分のメッセージのみ）
+        allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
+        
+        // メッセージの更新ルール
+        // 1. 自分のメッセージは全ての属性を更新可能
+        // 2. 他人のメッセージは既読ステータス(read)だけ更新可能
+        allow update: if isAuthenticated() && (
+          // 自分のメッセージなら全ての属性を更新可能
+          resource.data.senderId == request.auth.uid ||
+          // 他人のメッセージで、既読ステータスのみの更新は許可
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) &&
+            request.resource.data.read == true
+        );
+        
+        // 自分のメッセージのみ削除可能
+        allow delete: if isAuthenticated() && resource.data.senderId == request.auth.uid;
+      }
+    }
+    
+    // 通知関連のルール
+    match /notifications/{userId} {
+      // 自分の通知のみ読み書き可能
+      allow read, write: if isOwner(userId);
+      
+      // 他ユーザーへの通知作成を許可（イベント通知など）
+      function canSendNotification() {
+        return isAuthenticated();
+      }
+      
+      // 通知アイテム
+      match /items/{notificationId} {
+        // 自分の通知アイテムのみ読み取り可能
+        allow read: if isOwner(userId);
+        // 自分への通知アイテムの作成・更新は認証済みユーザーなら可能（他者からの通知）
+        // 自分の通知アイテムの削除は自分のみ可能
+        allow create: if isAuthenticated();
+        allow update: if isOwner(userId);
+        allow delete: if isOwner(userId);
+      }
+    }
+    
+    // 検索インデックス関連のルール
+    match /searchIndex/{docId} {
+      // 検索インデックスは誰でも読み取り可能
+      allow read: if isAuthenticated();
+      // 検索インデックスの作成・更新・削除は管理者のみ可能
+      allow write: if false; // サーバーサイド処理のみで更新
+    }
+    
+    // 位置情報関連のルール
+    match /locations/{userId} {
+      // 自分の位置情報は読み書き可能
+      allow read, write: if isOwner(userId);
+      // 他のユーザーの位置情報は読み取りのみ可能（距離計算用）
+      allow read: if isAuthenticated();
+    }
+    
+    // 掲示板の投稿ルール (boardPosts)
+    match /boardPosts/{postId} {
+      // イベント参加者かどうかを確認する関数
+      function isEventParticipant(eventId) {
+        return exists(/databases/$(database)/documents/events/$(eventId)) &&
+               request.auth != null &&
+               (
+                 get(/databases/$(database)/documents/events/$(eventId)).data.createdBy == request.auth.uid ||
+                 (get(/databases/$(database)/documents/events/$(eventId)).data.admins != null && 
+                  request.auth.uid in get(/databases/$(database)/documents/events/$(eventId)).data.admins) ||
+                 (get(/databases/$(database)/documents/events/$(eventId)).data.attendees != null && 
+                  request.auth.uid in get(/databases/$(database)/documents/events/$(eventId)).data.attendees)
+               );
+      }
+
+      // サークルメンバーかどうかを確認する関数
+      function isCircleMemberForBoard(circleId) {
+        return exists(/databases/$(database)/documents/circles/$(circleId)) &&
+               request.auth != null &&
+               (
+                 get(/databases/$(database)/documents/circles/$(circleId)).data.createdBy == request.auth.uid ||
+                 (get(/databases/$(database)/documents/circles/$(circleId)).data.admins != null && 
+                  request.auth.uid in get(/databases/$(database)/documents/circles/$(circleId)).data.admins) ||
+                 (get(/databases/$(database)/documents/circles/$(circleId)).data.members != null && 
+                  request.auth.uid in get(/databases/$(database)/documents/circles/$(circleId)).data.members)
+               );
+      }
+
+      // 親投稿のコンテキストに従うかどうかの確認
+      function canPostToParent(parentId) {
+        return exists(/databases/$(database)/documents/boardPosts/$(parentId)) &&
+               (
+                 (get(/databases/$(database)/documents/boardPosts/$(parentId)).data.circleId != null && 
+                  isCircleMemberForBoard(get(/databases/$(database)/documents/boardPosts/$(parentId)).data.circleId)) || 
+                 (get(/databases/$(database)/documents/boardPosts/$(parentId)).data.eventId != null && 
+                  isEventParticipant(get(/databases/$(database)/documents/boardPosts/$(parentId)).data.eventId))
+               );
+      }
+
+      // 読み取り権限を分割する
+      // 単一ドキュメント取得 (get)
+      allow get: if isAuthenticated(); // 認証済みユーザーなら誰でも単一投稿を読み取り可能に変更
+      
+      // リスト取得 (list/query)
+      allow list: if isAuthenticated();
+
+      // 投稿の作成ルール
+      allow create: if isAuthenticated() && 
+                     request.resource.data.userId == request.auth.uid &&
+                     (
+                       // サークル掲示板の場合はサークルメンバーかチェック
+                       (request.resource.data.circleId != null && isCircleMemberForBoard(request.resource.data.circleId)) ||
+                       // イベント掲示板の場合はイベント参加者かチェック
+                       (request.resource.data.eventId != null && isEventParticipant(request.resource.data.eventId)) ||
+                       // 親投稿がある場合（返信）は親投稿のコンテキストに従う
+                       (request.resource.data.parentId != null && canPostToParent(request.resource.data.parentId))
+                     );
+
+      // 更新ルール
+      allow update: if isAuthenticated() && (
+        // 投稿者自身は投稿内容（テキスト、画像など）を更新できる
+        resource.data.userId == request.auth.uid ||
+
+        // いいねの更新 (likes配列の変更) は参加者なら可能
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes']) && 
+          (
+            (resource.data.eventId != null && isEventParticipant(resource.data.eventId)) ||
+            (resource.data.circleId != null && isCircleMemberForBoard(resource.data.circleId))
+          )
+        ) ||
+
+        // 返信カウントの更新 (replyCount の増加) は参加者なら可能
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['replyCount']) &&
+          request.resource.data.replyCount >= resource.data.replyCount &&
+          (
+            (resource.data.eventId != null && isEventParticipant(resource.data.eventId)) ||
+            (resource.data.circleId != null && isCircleMemberForBoard(resource.data.circleId))
+          )
+        )
+      );
+
+      // 削除は投稿者のみ可能
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+  }
+}

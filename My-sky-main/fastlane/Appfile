@@ -1,0 +1,9 @@
+app_identifier("com.meetify.app") # アプリのバンドルID
+package_name("com.meetify.app") # Androidのパッケージ名
+
+# App Store Connectのチーム情報
+apple_id("developer@meetify.app") # Apple ID
+team_id("XXXX123456") # Apple Developer Team ID
+
+# Google Playストア情報
+json_key_file("./android/play-store-key.json") # Google Play Console API用のJSONキーファイル

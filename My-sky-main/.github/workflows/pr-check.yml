@@ -1,0 +1,91 @@
+name: Pull Request チェック
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint:
+    name: ESLint・TypeScriptチェック
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Node.jsセットアップ
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: 依存関係インストール
+        run: npm ci --ignore-scripts
+
+      - name: ESLintによる静的解析
+        run: npm run lint
+
+      - name: TypeScriptコンパイル確認
+        run: npm run tsc
+
+  test:
+    name: Jestユニットテスト
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Node.jsセットアップ
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: 依存関係インストール
+        run: npm ci --ignore-scripts
+
+      - name: テスト実行
+        run: npm test -- --coverage
+
+      - name: カバレッジレポートアップロード
+        uses: codecov/codecov-action@v3
+        if: always()
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+
+  android-build-check:
+    name: Android ビルドチェック
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Node.jsセットアップ
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Java Development Kitセットアップ
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '11'
+
+      - name: 依存関係インストール
+        run: npm ci --ignore-scripts
+
+      - name: Gradleキャッシュ設定
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Androidデバッグビルド確認
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon
