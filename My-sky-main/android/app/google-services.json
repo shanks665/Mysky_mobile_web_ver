@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "67775326182",
+    "project_id": "kskw-68eee",
+    "storage_bucket": "kskw-68eee.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:67775326182:android:bbe900425e7dd5ec205827",
+        "android_client_info": {
+          "package_name": "com.meetify"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCrryvDQphW4JlUBHRx4pTEeHHQ6GdwMGE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

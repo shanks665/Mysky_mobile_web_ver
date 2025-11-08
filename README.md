@@ -267,8 +267,8 @@ MIT License
 
 ## 📧 お問い合わせ
 
-- GitHub Issues: [https://github.com/shanks665/My-sky/issues](https://github.com/shanks665/My-sky/issues)
-- Email: support@mysky.app
+- GitHub Issues: [https://github.com/shanks665/Mysky_mobile_web_ver/issues](https://github.com/shanks665/My-sky/issues)
+
 
 ---
 
