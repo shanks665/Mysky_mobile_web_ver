@@ -1,0 +1,57 @@
+spring:
+  application:
+    name: mysky-api
+  
+  datasource:
+    url: jdbc:postgresql://localhost:5432/mysky
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+  
+  security:
+    user:
+      name: admin
+      password: admin
+
+server:
+  port: 8080
+
+# JWT Configuration
+jwt:
+  secret: ${JWT_SECRET:mySecretKeyForJWTTokenGenerationAndValidation1234567890}
+  expiration: 86400000  # 24 hours
+
+# AWS S3 Configuration
+aws:
+  s3:
+    bucket-name: ${S3_BUCKET_NAME:mysky-uploads}
+    region: ${AWS_REGION:ap-northeast-1}
+    access-key: ${AWS_ACCESS_KEY:}
+    secret-key: ${AWS_SECRET_KEY:}
+
+# Logging
+logging:
+  level:
+    root: INFO
+    com.mysky.api: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
