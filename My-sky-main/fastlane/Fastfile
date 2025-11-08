@@ -1,0 +1,93 @@
+default_platform(:android)
+
+platform :android do
+  desc "Android用のアプリをビルドする"
+  lane :build do |options|
+    gradle(
+      task: "clean assembleRelease",
+      project_dir: "android/"
+    )
+  end
+
+  desc "Firebase App Distributionに配布する"
+  lane :distribute do |options|
+    build
+    # リリースノートの生成
+    changelog = changelog_from_git_commits(
+      merge_commit_filtering: "exclude_merges",
+      commits_count: 10
+    )
+    # Firebase App Distributionへのアップロード
+    firebase_app_distribution(
+      app: options[:app_id] || ENV["FIREBASE_APP_ID_ANDROID_DEV"],
+      groups: options[:groups] || "testers",
+      release_notes: changelog,
+      firebase_cli_token: ENV["FIREBASE_TOKEN"]
+    )
+  end
+
+  desc "Play Storeにリリースする"
+  lane :release do
+    build
+    # Google Play Storeへのアップロード
+    upload_to_play_store(
+      track: 'internal',
+      release_status: 'completed',
+      aab: "#{lane_context[SharedValues::GRADLE_AAB_OUTPUT_PATH]}"
+    )
+  end
+end
+
+platform :ios do
+  desc "iOS用のアプリをビルドする"
+  lane :build do |options|
+    cocoapods(
+      clean_install: true,
+      podfile: "ios/Podfile"
+    )
+    gym(
+      workspace: "ios/Meetify.xcworkspace",
+      scheme: "Meetify",
+      clean: true,
+      export_method: options[:method] || "development"
+    )
+  end
+
+  desc "TestFlightにアップロードする"
+  lane :beta do
+    build(method: "app-store")
+    pilot(
+      skip_waiting_for_build_processing: true,
+      skip_submission: true
+    )
+  end
+
+  desc "Firebase App Distributionに配布する"
+  lane :distribute do |options|
+    build(method: "development")
+    # リリースノートの生成
+    changelog = changelog_from_git_commits(
+      merge_commit_filtering: "exclude_merges",
+      commits_count: 10
+    )
+    # Firebase App Distributionへのアップロード
+    firebase_app_distribution(
+      app: options[:app_id] || ENV["FIREBASE_APP_ID_IOS_DEV"],
+      groups: options[:groups] || "testers",
+      release_notes: changelog,
+      firebase_cli_token: ENV["FIREBASE_TOKEN"]
+    )
+  end
+
+  desc "App Storeにリリースする"
+  lane :release do
+    build(method: "app-store")
+    deliver(
+      submit_for_review: true,
+      automatic_release: true,
+      force: true,
+      skip_metadata: false,
+      skip_screenshots: false
+    )
+  end
+end 

@@ -1,0 +1,30 @@
+# Meetifyプロジェクトのコードオーナー設定
+# https://docs.github.com/ja/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# デフォルトオーナー（リポジトリ全体）
+*       @meetify-admin
+
+# フロントエンド関連
+/src/components/  @meetify/frontend-team
+/src/screens/     @meetify/frontend-team
+/src/navigation/  @meetify/frontend-team
+/src/styles/      @meetify/frontend-team
+
+# バックエンド関連
+/src/services/    @meetify/backend-team
+/src/contexts/    @meetify/backend-team
+/src/models/      @meetify/backend-team
+/firebase/        @meetify/backend-team
+
+# インフラストラクチャとCI/CD
+/.github/         @meetify/devops-team
+/fastlane/        @meetify/devops-team
+Dockerfile        @meetify/devops-team
+docker-compose.yml @meetify/devops-team
+
+# ネイティブコード
+/android/         @meetify/mobile-team
+/ios/             @meetify/mobile-team
+
+# ドキュメント
+*.md              @meetify/docs-team 
